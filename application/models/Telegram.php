@@ -75,11 +75,10 @@ class __Module_Telegram_InlineKeyboard extends CI_Model{
 
 	function __construct(){
 		parent::__construct();
-		$this->selective(FALSE);
 	}
 
 	function row(){ return new __Module_Telegram_InlineKeyboard_Row(); }
-	function row_button($text, $request = NULL, $switch = FALSE){ return $this->row()->button($text, $request)->end_row(); }
+	function row_button($text, $request = NULL, $switch = NULL){ return $this->row()->button($text, $request, $switch)->end_row(); }
 
 	function push($data){
 		if(!is_array($data)){ return FALSE; }
@@ -87,27 +86,9 @@ class __Module_Telegram_InlineKeyboard extends CI_Model{
 		return $this;
 	}
 
-	function selective($val = TRUE){
-		$this->config['selective'] = $val;
-		return $this;
-	}
-
-	function show($one_time = FALSE, $resize = FALSE){
+	function show(){
 		$this->telegram->send->_push('reply_markup', [
-			'keyboard' => $this->rows,
-			'resize_keyboard' => $resize,
-			'one_time_keyboard' => $one_time,
-			'selective' => $this->config['selective']
-		]);
-		$this->_reset();
-		return $this->telegram->send;
-	}
-
-	function hide($sel = FALSE){
-		if($sel === TRUE){ $this->selective(TRUE); }
-		$this->telegram->send->_push('reply_markup', [
-			'hide_keyboard' => TRUE,
-			'selective' => $this->config['selective']
+			'inline_keyboard' => $this->rows,
 		]);
 		$this->_reset();
 		return $this->telegram->send;
@@ -121,19 +102,24 @@ class __Module_Telegram_InlineKeyboard extends CI_Model{
 
 class __Module_Telegram_InlineKeyboard_Row extends CI_Model{
 	private $buttons;
-	function button($text, $request = NULL, $switch = FALSE){
+	function button($text, $request = NULL, $switch = NULL){
 		$data = array();
 		$data['text'] = $text;
 		if(filter_var($request, FILTER_VALIDATE_URL) !== FALSE){ $data['url'] = $request; }
-		elseif($switch === TRUE){ $data['switch_inline_query'] = $request; }
-		elseif($switch === FALSE){ $data['callback_data'] = $request; }
+		elseif($switch === TRUE){
+			// enviar por privado
+			$data['url'] = "https://telegram.me/" .$this->config->item('telegram_bot_name') ."?start=" .urlencode($request);
+		}
+		elseif($switch === FALSE){ $data['switch_inline_query'] = $request; }
+		elseif($switch === NULL or is_string($switch)){ $data['callback_data'] = $request; }
+		if(is_string($switch)){ $data['switch_inline_query'] = $switch; }
 		$this->buttons[] = $data;
 		return $this;
 	}
 	function end_row(){
 		var_dump($this->buttons);
-		$this->telegram->send->keyboard()->push($this->buttons);
-		return $this->telegram->send->keyboard();
+		$this->telegram->send->inline_keyboard()->push($this->buttons);
+		return $this->telegram->send->inline_keyboard();
 	}
 }
 
@@ -141,13 +127,16 @@ class __Module_Telegram_Sender extends CI_Model{
 	private $content = array();
 	private $method = NULL;
 	private $_keyboard;
+	private $_inline;
 
 	function __construct(){
 		parent::__construct();
 		$this->_keyboard = new __Module_Telegram_Keyboard();
+		$this->_inline = new __Module_Telegram_InlineKeyboard();
 	}
 
 	function chat($id = NULL){
+		if($id === TRUE){ $id = $this->telegram->chat->id; }
 		$this->content['chat_id'] = $id;
 		return $this;
 	}
@@ -237,9 +226,7 @@ class __Module_Telegram_Sender extends CI_Model{
 	}
 
 	function keyboard(){ return $this->_keyboard; }
-	function inline_keyboard(){
-		// TODO
-	}
+	function inline_keyboard(){ return $this->_inline; }
 
 	function force_reply($selective = TRUE){
 		$this->content['reply_markup'] = ['force_reply' => TRUE, 'selective' => $selective];
@@ -303,11 +290,13 @@ class __Module_Telegram_Sender extends CI_Model{
 	function get_members_count($chat = NULL, $keep = FALSE){ return $this->_parse_generic_chatFunctions("getChatMembersCount", $keep, $chat); }
 
 	function edit($type){
-		if(!in_array($type, ['text', 'message', 'caption'])){ return FALSE; }
+		if(!in_array($type, ['text', 'message', 'caption', 'keyboard', 'inline', 'markup'])){ return FALSE; }
 		if(isset($this->content['text']) && in_array($type, ['text', 'message'])){
 			$this->method = "editMessageText";
 		}elseif(isset($this->content['caption']) && $type == "caption"){
 			$this->method = "editMessageCaption";
+		}elseif(isset($this->content['inline_keyboard']) && in_array($type, ['keyboard', 'inline', 'markup'])){
+			$this->method = "editMessageReplyMarkup";
 		}else{
 			return FALSE;
 		}
@@ -475,30 +464,45 @@ class Telegram extends CI_Model{
 		$this->raw = $content;
 		$this->data = json_decode($content, TRUE);
 		$this->id = $this->data['update_id'];
-		$this->message = $this->data['message']['message_id'];
-		$this->chat = (object) $this->data['message']['chat'];
-		$this->user = (object) $this->data['message']['from'];
-		if(isset($this->data['message']['caption'])){
-			$this->caption = $this->data['message']['caption'];
-		}
-		if(isset($this->data['message']['reply_to_message'])){
-			$this->has_reply = TRUE;
-			$this->reply_is_forward = (isset($this->data['message']['reply_to_message']['forward_from']));
-			$this->reply_user = (object) $this->data['message']['reply_to_message']['from'];
-			$this->reply = (object) $this->data['message']['reply_to_message'];
-		}
-		if(isset($this->data['message']['forward_from_chat'])){
-			$this->has_forward = TRUE;
-		}
-		if(isset($this->data['message']['new_chat_participant'])){
-			$this->new_user = (object) $this->data['message']['new_chat_participant'];
-		}elseif(isset($this->data['message']['left_chat_participant'])){
-			$this->new_user = (object) $this->data['message']['left_chat_participant'];
+		if(isset($this->data['message']) or isset($this->data['edited_message'])){
+			$this->key = (isset($this->data['edited_message']) ? "edited_message" : "message");
+			if($this->key == "edited_message"){
+				$this->is_edit = TRUE;
+				$this->edit_date = $this->data[$this->key]['edit_date'];
+			}
+			$this->message = $this->data[$this->key]['message_id'];
+			$this->chat = (object) $this->data[$this->key]['chat'];
+			$this->user = (object) $this->data[$this->key]['from'];
+			if(isset($this->data[$this->key]['caption'])){
+				$this->caption = $this->data[$this->key]['caption'];
+			}
+			if(isset($this->data[$this->key]['reply_to_message'])){
+				$this->has_reply = TRUE;
+				$this->reply_is_forward = (isset($this->data[$this->key]['reply_to_message']['forward_from']));
+				$this->reply_user = (object) $this->data[$this->key]['reply_to_message']['from'];
+				$this->reply = (object) $this->data[$this->key]['reply_to_message'];
+			}
+			if(isset($this->data[$this->key]['forward_from_chat'])){
+				$this->has_forward = TRUE;
+			}
+			if(isset($this->data[$this->key]['new_chat_participant'])){
+				$this->new_user = (object) $this->data[$this->key]['new_chat_participant'];
+			}elseif(isset($this->data[$this->key]['left_chat_participant'])){
+				$this->new_user = (object) $this->data[$this->key]['left_chat_participant'];
+			}
+		}elseif(isset($this->data['callback_query'])){
+			$this->key = "callback_query";
+			$this->id = $this->data[$this->key]['id'];
+			$this->message = $this->data[$this->key]['message']['message_id'];
+			$this->chat = (object) $this->data[$this->key]['message']['chat'];
+			$this->user = (object) $this->data[$this->key]['from'];
+			$this->callback = $this->data[$this->key]['data'];
 		}
 	}
 
 	private $raw;
 	private $data = array();
+	public $key = NULL;
 	public $id = NULL;
 	public $message = NULL;
 	public $chat = NULL;
@@ -508,12 +512,15 @@ class Telegram extends CI_Model{
 	public $reply_user = NULL;
 	public $has_reply = FALSE;
 	public $has_forward = FALSE;
+	public $is_edit = FALSE;
+	public $edit_date = NULL;
 	public $reply_is_forward = FALSE;
 	public $caption = NULL;
+	public $callback = FALSE;
 	public $send; // Class
 
 	function text($clean = FALSE){
-		$text = @$this->data['message']['text'];
+		$text = @$this->data[$this->key]['text'];
 		if($clean === TRUE){ $text = $this->clean('alphanumeric-full-spaces', $text); }
 		return $text;
 	}
@@ -529,12 +536,15 @@ class Telegram extends CI_Model{
 
 	function text_contains($input, $strpos = NULL){
 		if(!is_array($input)){ $input = array($input); }
+		$text = strtolower($this->text());
+		$text = str_replace(["á", "é", "í", "ó", "ú"], ["a", "e", "i", "o", "u"], $text); // HACK
 		foreach($input as $i){
+			$j = str_replace(["á", "é", "í", "ó", "ú"], ["a", "e", "i", "o", "u"], $i); // HACK
 			if(
-				($strpos === NULL and strpos(strtolower($this->text()), strtolower($i)) !== FALSE) or // Buscar cualquier coincidencia
-				($strpos === TRUE and strpos(strtolower($this->text()), strtolower($i)) === 0) or // Buscar textualmente eso al principio
+				($strpos === NULL and strpos($text, strtolower($j)) !== FALSE) or // Buscar cualquier coincidencia
+				($strpos === TRUE and strpos($text, strtolower($j)) === 0) or // Buscar textualmente eso al principio
 				($strpos === FALSE and strpos($this->text(), $i) === 0) or // Buscar textualmente al principio + CASE sensitive
-				($strpos !== NULL and strpos(strtolower($this->text()), strtolower($i)) == $strpos) // Buscar por strpos
+				($strpos !== NULL and strpos($text, strtolower($j)) == $strpos) // Buscar por strpos
 			){
 				return TRUE;
 			}
@@ -627,26 +637,35 @@ class Telegram extends CI_Model{
 		return FALSE;
 	}
 
-	function text_command($cmd = NULL){
+	function text_command($cmd = NULL, $begin = TRUE){
 		// NULL -> saca el primer comando o FALSE.
 		// TRUE -> array [comandos]
 		// STR -> comando definido.
+		// $begin = si es comando inicial
 		if(!isset($this->data['message']['entities'])){ return FALSE; }
 		$cmds = array();
 		$text = $this->text(FALSE); // No UTF-8 clean
+		$initbegin = FALSE;
 		foreach($this->data['message']['entities'] as $e){
 			if($e['type'] == 'bot_command'){ $cmds[] = strtolower(substr($text, $e['offset'], $e['length'])); }
+			if($initbegin == FALSE && $e['offset'] == 0){ $initbegin = TRUE; }
 		}
 		if($cmd == NULL){ return (count($cmds) > 0 ? $cmds[0] : FALSE); }
 		if($cmd === TRUE){ return $cmds; }
 		if(is_string($cmd)){
 			if($cmd[0] != "/"){ $cmd = "/" .$cmd; }
+			if(in_array(strtolower($cmd), $cmds)){ return TRUE; }
+			$name = $this->config->item('telegram_bot_name');
+			if($name){
+				if($name[0] != "@"){ $name = "@" .$name; }
+				$cmd = $cmd.$name;
+			}
 			return in_array(strtolower($cmd), $cmds);
 		}
 		return FALSE;
 	}
 
-	function text_hashtag($hg = NULL){
+	function text_hashtag($tag = NULL){
 		// NULL -> saca el primer hashtag o FALSE.
 		// TRUE -> array [hashtags]
 		// STR -> hashtag definido.
@@ -656,12 +675,26 @@ class Telegram extends CI_Model{
 		foreach($this->data['message']['entities'] as $e){
 			if($e['type'] == 'hashtag'){ $hgs[] = strtolower(substr($text, $e['offset'], $e['length'])); }
 		}
-		if($hg == NULL){ return (count($hgs) > 0 ? $hgs[0] : FALSE); }
-		if($hg === TRUE){ return $hgs; }
-		if(is_string($hg)){
-			if($hg[0] != "#"){ $hg = "#" .$hg; }
-			return in_array(strtolower($hg), $hgs);
+		if($tag == NULL){ return (count($hgs) > 0 ? $hgs[0] : FALSE); }
+		if($tag === TRUE){ return $hgs; }
+		if(is_string($tag)){
+			if($tag[0] != "#"){ $tag = "#" .$tag; }
+			return in_array(strtolower($tag), $hgs);
 		}
+		return FALSE;
+	}
+
+	function text_url($cmd = NULL){
+		// NULL -> saca la primera URL o FALSE.
+		// TRUE -> array [URLs]
+		if(!isset($this->data['message']['entities'])){ return FALSE; }
+		$cmds = array();
+		$text = $this->text(FALSE); // No UTF-8 clean
+		foreach($this->data['message']['entities'] as $e){
+			if($e['type'] == 'url'){ $cmds[] = strtolower(substr($text, $e['offset'], $e['length'])); }
+		}
+		if($cmd == NULL){ return (count($cmds) > 0 ? $cmds[0] : FALSE); }
+		if($cmd === TRUE){ return $cmds; }
 		return FALSE;
 	}
 
@@ -674,6 +707,8 @@ class Telegram extends CI_Model{
 	function words($position = NULL, $amount = 1, $filter = FALSE){ // Contar + recibir argumentos
 		if($position === NULL){
 			return count(explode(" ", $this->text()));
+		}elseif($position === TRUE){
+			return explode(" ", $this->text());
 		}elseif(is_numeric($position)){
 			if($amount === TRUE){ $filter = 'alphanumeric'; $amount = 1; }
 			elseif(is_string($amount)){ $filter = $amount; $amount = 1; }
@@ -706,7 +741,7 @@ class Telegram extends CI_Model{
 
 	function is_chat_group(){ return isset($this->chat->type) && in_array($this->chat->type, ["group", "supergroup"]); }
 	function data_received($expect = NULL){
-		$data = ["new_chat_participant", "left_chat_participant", "new_chat_member", "left_chat_member", "reply_to_message",
+		$data = ["migrate_to_chat_id", "migrate_from_chat_id", "new_chat_participant", "left_chat_participant", "new_chat_member", "left_chat_member", "reply_to_message",
 			"text", "audio", "document", "photo", "voice", "location", "contact"];
 		foreach($data as $t){
 			if(isset($this->data["message"][$t])){
@@ -770,17 +805,30 @@ class Telegram extends CI_Model{
 		return FALSE;
 	}
 
-	function document(){}
+	function document($object = TRUE){
+		if(!isset($this->data['message']['document'])){ return FALSE; }
+		$doc = $this->data['message']['document'];
+		if(empty($doc)){ return FALSE; }
+		if($object == TRUE){ return (object) $doc; }
+		// elseif($object == FALSE){ return array_values($doc); }
+		return $doc;
+	}
 
-	function photo($retall = FALSE, $id = -1){
+	function gif(){
+		$gif = $this->document(TRUE);
+		if(!$gif or !in_array($gif->mime_type, ["video/mp4"])){ return FALSE; }
+		// TODO gif viene por size?
+		return $gif->file_id;
+	}
+
+	function photo($retall = FALSE, $sel = -1){
+		if(!isset($this->data['message']['photo'])){ return FALSE; }
 		$photos = $this->data['message']['photo'];
 		if(empty($photos)){ return FALSE; }
-		$photo = NULL;
-		if($id == -1 or $id > count($photos) - 1){ $photo = array_pop($photos); }
-		else{ $photo = $photos[$id]; }
-
-		if($retall == FALSE){ return $photo['file_id']; }
-		elseif($retall == TRUE){ return (object) $photo; }
+		// Select last file or $sel_id
+		$sel = ($sel == -1 or ($sel > count($photos) - 1) ? (count($photos) - 1) : $sel);
+		if($retall === FALSE){ return $photos[$sel]['file_id']; }
+		elseif($retall === TRUE){ return (object) $photos[$sel]; }
 	}
 
 	function location($object = TRUE){
@@ -791,6 +839,15 @@ class Telegram extends CI_Model{
 		elseif($object == FALSE){ return array_values($loc); }
 		// null u otro
 		return $loc;
+	}
+
+	function voice($object = NULL){
+		if(!isset($this->data['message']['voice'])){ return FALSE; }
+		$vo = $this->data['message']['voice'];
+		if(empty($vo)){ return FALSE; }
+		if($object === TRUE){ return (object) $vo; }
+		elseif($object === FALSE){ return array_values($vo); }
+		return $vo['file_id'];
 	}
 
 	function contact($self = FALSE, $object = TRUE){
@@ -811,6 +868,23 @@ class Telegram extends CI_Model{
 		if(!isset($this->data['message']['sticker'])){ return FALSE; }
 		if($object === TRUE){ return (object) $this->data['message']['sticker']; }
 		return $this->data['message']['sticker']['file_id'];
+	}
+
+	function pinned_message($content = NULL){
+		if(!isset($this->data['message']['pinned_message'])){ return FALSE; }
+		$pin = $this->data['message']['pinned_message'];
+		if($content === NULL){
+			$user = (object) $pin['from'];
+			$chat = (object) $pin['chat'];
+			$data = $pin['text'];
+			return (object) array(
+				'user' => $user,
+				'chat' => $chat,
+				'data' => $data
+			);
+		}
+		elseif($content === TRUE){ return $pin['text']; }
+		elseif($content === FALSE){  }
 	}
 
 	function download($file_id){
@@ -841,6 +915,7 @@ class Telegram extends CI_Model{
 			'map' => "\ud83d\uddfa",
 			'candy' => "\ud83c\udf6c",
 			'spiral' => "\ud83c\udf00",
+			'tennis' => "\ud83c\udfbe",
 
 			'forbid' => "\u26d4\ufe0f",
 			'times' => "\u274c",
@@ -913,6 +988,7 @@ class Telegram extends CI_Model{
 			'map' => [':map:'],
 			'candy' => [':candy:'],
 			'spiral' => [':spiral:'],
+			'tennis' => [":tennis:"],
 			'green-check' => [':ok:', ':green-check:'],
 			'warning' => [':warning:'],
 			'exclamation-red' => [':exclamation-red:'],
