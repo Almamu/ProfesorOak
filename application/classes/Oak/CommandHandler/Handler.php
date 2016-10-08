@@ -35,5 +35,5 @@
          * @param $telegram \Telegram Datos de la solicitud al bot enviados por Telegram
          * @return void
          */
-        function run($telegram);
+        function run($telegram, $analytics, $pokemon);
     };

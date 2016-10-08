@@ -52,7 +52,7 @@
         /**
          * @inheritdoc
          */
-        public function run($telegram)
+        public function run($telegram, $analytics, $pokemon)
         {
             // es necesario eliminar la / del principio
             $command = substr($telegram->words(0, 1), 1);
@@ -68,6 +68,6 @@
 
             // instanciamos la clase en cuestion y ejecutamos el metodo "run" que todas tienen
             $obj = new $class();
-            $obj->run($telegram);
+            $obj->run($telegram, $analytics, $pokemon);
         }
     };

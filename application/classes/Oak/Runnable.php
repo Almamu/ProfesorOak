@@ -15,8 +15,10 @@
         /**
          * Funcion a ejecutar para que la logica de este runnable funcione
          *
-         * @param $telegram \Telegram Datos de la solicitud enviada por telegram al bot
+         * @param telegram \Telegram Datos de la solicitud enviada por telegram al bot
+         * @param $analytics \Analytics Analytics para el bot
+         * @param $pokemon \Pokemon Modelo con datos para el bot
          * @return void
          */
-        function run($telegram);
+        function run($telegram, $analytics, $pokemon);
     };
